@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+backend/dist/
+mobile/build/
+mobile/.dart_tool/
+
+# Environment and secrets (keep .env.example)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Internal planning and context (not application code)
+Details/
+.agents/
+PROJECT.md
+TEST_INFRA.md
+TEST_READY.md
+
+# Flutter / Android / iOS generated
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/build/
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+.gradle/
+local.properties

@@ -1,0 +1,39 @@
+name: Build iOS Application
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS Application on macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Mobile Dependencies
+        run: |
+          cd mobile
+          flutter pub get
+
+      - name: Verify Code Quality & Static Analysis
+        run: |
+          cd mobile
+          flutter analyze
+
+      - name: Build iOS Frameworks & Runner
+        run: |
+          cd mobile
+          flutter build ios --no-codesign --release
+
