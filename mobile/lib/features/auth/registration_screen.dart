@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../core/theme/app_theme.dart';
 import 'services/auth_api_service.dart';
-import 'widgets/auth_header.dart';
-import 'widgets/custom_text_field.dart';
-import 'widgets/primary_button.dart';
 import 'otp_verification_screen.dart';
 import 'login_screen.dart';
 
@@ -44,7 +40,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     return hasUpper && hasLower && hasDigit && hasSpecial;
   }
 
-  Future<void> _handleSendOtp() async {
+  Future<void> _handleRegister() async {
     final fullName = _fullNameController.text.trim();
     final phone = _phoneController.text.trim();
     final password = _passwordController.text;
@@ -52,6 +48,26 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
     if (fullName.isEmpty || phone.isEmpty || password.isEmpty || confirmPassword.isEmpty) {
       setState(() => _errorMessage = 'All fields are required');
+      return;
+    }
+
+    if (fullName.length < 2) {
+      setState(() => _errorMessage = 'Full name must be at least 2 characters');
+      return;
+    }
+
+    if (fullName.length > 100) {
+      setState(() => _errorMessage = 'Full name cannot exceed 100 characters');
+      return;
+    }
+
+    if (phone.length < 5 || phone.length > 20) {
+      setState(() => _errorMessage = 'Please enter a valid mobile number');
+      return;
+    }
+
+    if (password.length > 72) {
+      setState(() => _errorMessage = 'Password cannot exceed 72 characters');
       return;
     }
 
@@ -76,229 +92,200 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _errorMessage = null;
     });
 
-    final res = await AuthApiService.sendRegistrationOtp(phone);
+    try {
+      final res = await AuthApiService.sendRegistrationOtp(phone);
 
-    if (!mounted) return;
-    setState(() => _isLoading = false);
+      if (!mounted) return;
+      setState(() => _isLoading = false);
 
-    if (res.success) {
-      final cooldown = res.data ?? 60;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => OtpVerificationScreen(
-            mobileNumber: phone,
-            flowType: OtpFlowType.registration,
-            fullName: fullName,
-            password: password,
-            confirmPassword: confirmPassword,
-            acceptTerms: _acceptTerms,
-            initialCooldownSeconds: cooldown,
+      if (res.success) {
+        final cooldown = res.data ?? 60;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => OtpVerificationScreen(
+              mobileNumber: phone,
+              flowType: OtpFlowType.registration,
+              fullName: fullName,
+              password: password,
+              confirmPassword: confirmPassword,
+              acceptTerms: _acceptTerms,
+              initialCooldownSeconds: cooldown,
+            ),
           ),
-        ),
-      );
-    } else {
-      setState(() => _errorMessage = res.message);
+        );
+      } else {
+        setState(() => _errorMessage = res.message);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'An unexpected error occurred: $e';
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.backgroundCream,
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            AuthHeader(
-              showBackArrow: true,
-              onBack: () => Navigator.maybePop(context),
-            ),
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppTheme.cardWhite,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0x080F2D23),
-                    blurRadius: 20,
-                    offset: Offset(0, -4),
+      appBar: AppBar(
+        title: const Text('Register'),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Create Account',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Join RootU to connect with riders and plan safe group trips',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey,
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              if (_errorMessage != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    border: Border.all(color: Colors.red),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+
+              TextField(
+                controller: _fullNameController,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Full Name',
+                  hintText: 'Enter your full name',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.person),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Mobile Number',
+                  hintText: 'Enter mobile number',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.phone),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _passwordController,
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  hintText: 'Min 8 chars, mixed case, number & symbol',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _confirmPasswordController,
+                obscureText: _obscureConfirmPassword,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _handleRegister(),
+                decoration: InputDecoration(
+                  labelText: 'Confirm Password',
+                  hintText: 'Re-enter your password',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Checkbox(
+                    value: _acceptTerms,
+                    onChanged: (val) => setState(() => _acceptTerms = val ?? false),
+                  ),
+                  const Expanded(
+                    child: Text(
+                      'I accept the Terms and Conditions and Privacy Policy',
+                      style: TextStyle(fontSize: 13),
+                    ),
                   ),
                 ],
               ),
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              const SizedBox(height: 16),
+
+              SizedBox(
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _handleRegister,
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Register'),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text(
-                    'Create Account',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.textPrimary,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Join RootU to connect with riders and plan safe group trips',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppTheme.textSecondary,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  if (_errorMessage != null) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFDE8E8),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.errorRed.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline_rounded, color: AppTheme.errorRed, size: 20),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _errorMessage!,
-                              style: const TextStyle(
-                                color: AppTheme.errorRed,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                  ],
-
-                  CustomTextField(
-                    label: 'Full Name',
-                    hintText: 'Enter your full name',
-                    prefixIcon: Icons.person_outline_rounded,
-                    controller: _fullNameController,
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 16),
-
-                  CustomTextField(
-                    label: 'Mobile Number',
-                    hintText: '+91 98765 43210',
-                    prefixIcon: Icons.phone_android_rounded,
-                    controller: _phoneController,
-                    keyboardType: TextInputType.phone,
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 16),
-
-                  CustomTextField(
-                    label: 'Password',
-                    hintText: 'Min 8 chars, mixed case, number & symbol',
-                    prefixIcon: Icons.lock_outline_rounded,
-                    obscureText: _obscurePassword,
-                    controller: _passwordController,
-                    textInputAction: TextInputAction.next,
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                        color: AppTheme.textSecondary,
-                        size: 20,
-                      ),
-                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  CustomTextField(
-                    label: 'Confirm Password',
-                    hintText: 'Re-enter your password',
-                    prefixIcon: Icons.lock_outline_rounded,
-                    obscureText: _obscureConfirmPassword,
-                    controller: _confirmPasswordController,
-                    textInputAction: TextInputAction.done,
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureConfirmPassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                        color: AppTheme.textSecondary,
-                        size: 20,
-                      ),
-                      onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: Checkbox(
-                          value: _acceptTerms,
-                          activeColor: AppTheme.primaryGreen,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-                          onChanged: (val) => setState(() => _acceptTerms = val ?? false),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'I agree to the RootU Terms of Service & Privacy Policy',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: AppTheme.textPrimary,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  PrimaryButton(
-                    text: 'Continue to Verification',
-                    isLoading: _isLoading,
-                    onPressed: _handleSendOtp,
-                  ),
-                  const SizedBox(height: 20),
-
-                  Center(
-                    child: GestureDetector(
-                      onTap: () {
+                  const Text('Already have an account?'),
+                  TextButton(
+                    onPressed: () {
+                      if (Navigator.of(context).canPop()) {
+                        Navigator.of(context).pop();
+                      } else {
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(builder: (_) => const LoginScreen()),
                         );
-                      },
-                      child: RichText(
-                        text: const TextSpan(
-                          text: 'Already have an account? ',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: AppTheme.textSecondary,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          children: [
-                            TextSpan(
-                              text: 'Log in',
-                              style: TextStyle(
-                                color: AppTheme.primaryGreen,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                      }
+                    },
+                    child: const Text('Login'),
                   ),
                 ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

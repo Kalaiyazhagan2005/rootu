@@ -1,10 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import '../../core/theme/app_theme.dart';
+import 'package:flutter/services.dart';
 import 'services/auth_api_service.dart';
-import 'widgets/auth_header.dart';
-import 'widgets/custom_text_field.dart';
-import 'widgets/primary_button.dart';
-import 'otp_verification_screen.dart';
 import 'login_screen.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -16,6 +13,7 @@ class ForgotPasswordScreen extends StatefulWidget {
 
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _phoneController = TextEditingController();
+  final _otpController = TextEditingController();
   final _newPasswordController = TextEditingController();
   final _confirmNewPasswordController = TextEditingController();
 
@@ -23,16 +21,60 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   bool _obscureConfirmPassword = true;
   String? _verificationToken;
 
-  bool _isLoading = false;
+  bool _isSendingOtp = false;
+  bool _isResetting = false;
+  int _cooldownSeconds = 0;
+  Timer? _timer;
+
   String? _errorMessage;
   String? _infoMessage;
 
   @override
+  void initState() {
+    super.initState();
+    _phoneController.addListener(_onCredentialChanged);
+    _otpController.addListener(_onCredentialChanged);
+  }
+
+  void _onCredentialChanged() {
+    if (_verificationToken != null) {
+      setState(() {
+        _verificationToken = null;
+      });
+    }
+  }
+
+  @override
   void dispose() {
+    _phoneController.removeListener(_onCredentialChanged);
+    _otpController.removeListener(_onCredentialChanged);
+    _timer?.cancel();
     _phoneController.dispose();
+    _otpController.dispose();
     _newPasswordController.dispose();
     _confirmNewPasswordController.dispose();
     super.dispose();
+  }
+
+  void _startCooldown([int seconds = 60]) {
+    setState(() => _cooldownSeconds = seconds);
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_cooldownSeconds > 0) {
+        if (mounted) setState(() => _cooldownSeconds--);
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  String _formatCooldown(int seconds) {
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    if (m > 0) {
+      return '$m:${s.toString().padLeft(2, '0')}';
+    }
+    return '${s}s';
   }
 
   bool _validatePassword(String pwd) {
@@ -51,50 +93,72 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       return;
     }
 
+    if (phone.length < 5 || phone.length > 20) {
+      setState(() => _errorMessage = 'Please enter a valid mobile number');
+      return;
+    }
+
+    _verificationToken = null;
     setState(() {
-      _isLoading = true;
+      _isSendingOtp = true;
       _errorMessage = null;
       _infoMessage = null;
     });
 
-    final res = await AuthApiService.sendForgotPasswordOtp(phone);
-    if (!mounted) return;
-    setState(() => _isLoading = false);
+    try {
+      final res = await AuthApiService.sendForgotPasswordOtp(phone);
+      if (!mounted) return;
+      setState(() => _isSendingOtp = false);
 
-    if (res.success) {
-      final token = await Navigator.of(context).push<String>(
-        MaterialPageRoute(
-          builder: (_) => OtpVerificationScreen(
-            mobileNumber: phone,
-            flowType: OtpFlowType.forgotPassword,
-            initialCooldownSeconds: res.data ?? 60,
-          ),
-        ),
-      );
-
-      if (token != null && mounted) {
+      if (res.success) {
+        final cd = res.data ?? 60;
+        _startCooldown(cd);
         setState(() {
-          _verificationToken = token;
-          _infoMessage = 'Mobile number verified. Please choose a new secure password.';
+          _infoMessage = 'Verification code sent to $phone';
         });
+      } else {
+        if (res.retryAfterSeconds != null) {
+          _startCooldown(res.retryAfterSeconds!);
+        }
+        setState(() => _errorMessage = res.message);
       }
-    } else {
-      setState(() => _errorMessage = res.message);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSendingOtp = false;
+        _errorMessage = 'An error occurred: $e';
+      });
     }
   }
 
   Future<void> _handleResetPassword() async {
     final phone = _phoneController.text.trim();
+    final otp = _otpController.text.trim();
     final newPassword = _newPasswordController.text;
     final confirmNewPassword = _confirmNewPasswordController.text;
 
-    if (_verificationToken == null) {
-      setState(() => _errorMessage = 'Please verify your mobile number first');
+    if (phone.isEmpty) {
+      setState(() => _errorMessage = 'Please enter your mobile number');
+      return;
+    }
+
+    if (phone.length < 5 || phone.length > 20) {
+      setState(() => _errorMessage = 'Please enter a valid mobile number');
+      return;
+    }
+
+    if (otp.isEmpty || otp.length != 6) {
+      setState(() => _errorMessage = 'Please enter a valid 6-digit verification code');
       return;
     }
 
     if (newPassword.isEmpty || confirmNewPassword.isEmpty) {
       setState(() => _errorMessage = 'Please enter and confirm your new password');
+      return;
+    }
+
+    if (newPassword.length > 72) {
+      setState(() => _errorMessage = 'Password cannot exceed 72 characters');
       return;
     }
 
@@ -110,229 +174,250 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     }
 
     setState(() {
-      _isLoading = true;
+      _isResetting = true;
       _errorMessage = null;
+      _infoMessage = null;
     });
 
-    final resetRes = await AuthApiService.resetPassword(
-      verificationToken: _verificationToken!,
-      phone: phone,
-      newPassword: newPassword,
-      confirmNewPassword: confirmNewPassword,
-    );
+    try {
+      // Verify OTP first if token not already acquired
+      String token = _verificationToken ?? '';
+      if (token.isEmpty) {
+        final verifyRes = await AuthApiService.verifyForgotPasswordOtp(phone, otp);
+        if (!verifyRes.success) {
+          if (!mounted) return;
+          setState(() {
+            _isResetting = false;
+            _errorMessage = verifyRes.message;
+          });
+          return;
+        }
+        token = verifyRes.data!;
+        _verificationToken = token;
+      }
 
-    if (!mounted) return;
-    setState(() => _isLoading = false);
+      final resetRes = await AuthApiService.resetPassword(
+        verificationToken: token,
+        phone: phone,
+        newPassword: newPassword,
+        confirmNewPassword: confirmNewPassword,
+      );
 
-    if (resetRes.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(resetRes.message),
-          backgroundColor: AppTheme.primaryDark,
-        ),
-      );
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-        (route) => false,
-      );
-    } else {
-      setState(() => _errorMessage = resetRes.message);
+      if (!mounted) return;
+      setState(() => _isResetting = false);
+
+      if (resetRes.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(resetRes.message),
+          ),
+        );
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
+        );
+      } else {
+        setState(() => _errorMessage = resetRes.message);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isResetting = false;
+        _errorMessage = 'An error occurred: $e';
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isTokenAcquired = _verificationToken != null;
+    final isLoading = _isSendingOtp || _isResetting;
 
     return Scaffold(
-      backgroundColor: AppTheme.backgroundCream,
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            AuthHeader(
-              showBackArrow: true,
-              onBack: () => Navigator.maybePop(context),
-            ),
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppTheme.cardWhite,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0x080F2D23),
-                    blurRadius: 20,
-                    offset: Offset(0, -4),
-                  ),
-                ],
+      appBar: AppBar(
+        title: const Text('Reset Password'),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Reset Password',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
-              child: Column(
+              const SizedBox(height: 8),
+              const Text(
+                'Enter your registered mobile number, OTP, and new password',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey,
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              if (_errorMessage != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    border: Border.all(color: Colors.red),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+
+              if (_infoMessage != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    border: Border.all(color: Colors.green),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _infoMessage!,
+                    style: const TextStyle(color: Colors.green),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    isTokenAcquired ? 'Create New Password' : 'Reset Password',
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.textPrimary,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    isTokenAcquired
-                        ? 'Enter a new secure password for your account'
-                        : 'We will send a 6-digit OTP to verify your identity',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: AppTheme.textSecondary,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  if (_errorMessage != null) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFDE8E8),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.errorRed.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline_rounded, color: AppTheme.errorRed, size: 20),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _errorMessage!,
-                              style: const TextStyle(
-                                color: AppTheme.errorRed,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                  ],
-
-                  if (_infoMessage != null) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEDF5EC),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.primaryGreen.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.check_circle_outline_rounded, color: AppTheme.primaryGreen, size: 20),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _infoMessage!,
-                              style: const TextStyle(
-                                color: AppTheme.primaryGreen,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                  ],
-
-                  CustomTextField(
-                    label: 'Mobile Number',
-                    hintText: '+91 98765 43210',
-                    prefixIcon: Icons.phone_android_rounded,
-                    controller: _phoneController,
-                    keyboardType: TextInputType.phone,
-                    readOnly: isTokenAcquired,
-                    suffixIcon: isTokenAcquired
-                        ? const Icon(Icons.check_circle_rounded, color: AppTheme.primaryGreen, size: 20)
-                        : null,
-                    textInputAction: TextInputAction.done,
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  if (isTokenAcquired) ...[
-                    CustomTextField(
-                      label: 'New Password',
-                      hintText: 'Min 8 chars, mixed case, number & symbol',
-                      prefixIcon: Icons.lock_outline_rounded,
-                      obscureText: _obscurePassword,
-                      controller: _newPasswordController,
+                  Expanded(
+                    child: TextField(
+                      controller: _phoneController,
+                      keyboardType: TextInputType.phone,
                       textInputAction: TextInputAction.next,
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                          color: AppTheme.textSecondary,
-                          size: 20,
-                        ),
-                        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                      decoration: const InputDecoration(
+                        labelText: 'Mobile Number',
+                        hintText: 'Enter mobile number',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.phone),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    CustomTextField(
-                      label: 'Confirm New Password',
-                      hintText: 'Re-enter your new password',
-                      prefixIcon: Icons.lock_outline_rounded,
-                      obscureText: _obscureConfirmPassword,
-                      controller: _confirmNewPasswordController,
-                      textInputAction: TextInputAction.done,
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscureConfirmPassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                          color: AppTheme.textSecondary,
-                          size: 20,
-                        ),
-                        onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    PrimaryButton(
-                      text: 'Set New Password',
-                      isLoading: _isLoading,
-                      onPressed: _handleResetPassword,
-                    ),
-                  ] else ...[
-                    PrimaryButton(
-                      text: 'Send Verification OTP',
-                      isLoading: _isLoading,
-                      onPressed: _handleSendOtp,
-                    ),
-                  ],
-
-                  const SizedBox(height: 20),
-                  Center(
-                    child: GestureDetector(
-                      onTap: () {
-                        Navigator.of(context).pushReplacement(
-                          MaterialPageRoute(builder: (_) => const LoginScreen()),
-                        );
-                      },
-                      child: const Text(
-                        'Back to Login',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: AppTheme.primaryGreen,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    height: 56,
+                    child: ElevatedButton(
+                      onPressed: (_cooldownSeconds > 0 || isLoading) ? null : _handleSendOtp,
+                      child: _isSendingOtp
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(
+                              _cooldownSeconds > 0 ? _formatCooldown(_cooldownSeconds) : 'Send OTP',
+                            ),
                     ),
                   ),
                 ],
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _otpController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: '6-Digit OTP',
+                  hintText: 'Enter 6-digit OTP',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.security),
+                  counterText: '',
+                  suffixIcon: _verificationToken != null
+                      ? const Icon(Icons.check_circle, color: Colors.green)
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _newPasswordController,
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: 'New Password',
+                  hintText: 'Min 8 chars, mixed case, number & symbol',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _confirmNewPasswordController,
+                obscureText: _obscureConfirmPassword,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _handleResetPassword(),
+                decoration: InputDecoration(
+                  labelText: 'Confirm New Password',
+                  hintText: 'Re-enter your new password',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              SizedBox(
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: isLoading ? null : _handleResetPassword,
+                  child: _isResetting
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Reset Password'),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              Center(
+                child: TextButton(
+                  onPressed: () {
+                    if (Navigator.of(context).canPop()) {
+                      Navigator.of(context).pop();
+                    } else {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      );
+                    }
+                  },
+                  child: const Text('Back to Login'),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
