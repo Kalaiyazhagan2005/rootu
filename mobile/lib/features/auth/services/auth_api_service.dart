@@ -20,13 +20,70 @@ class AuthApiResponse<T> {
 class AuthApiService {
   static String? customBaseUrl;
 
-  // 127.0.0.1:3000 connects directly over USB via 'adb reverse tcp:3000 tcp:3000' on Android devices,
-  // as well as working for desktop, web, and iOS simulator.
+  // Candidate connection endpoints:
+  // 1. 127.0.0.1:3000 via USB reverse proxy (adb reverse tcp:3000 tcp:3000)
+  // 2. 10.76.177.158:3000 via local Wi-Fi LAN
+  // 3. 10.0.2.2:3000 via Android Studio Emulator loopback
+  static const List<String> _candidateUrls = [
+    'http://127.0.0.1:3000/api/v1/auth',
+    'http://10.76.177.158:3000/api/v1/auth',
+    'http://10.0.2.2:3000/api/v1/auth',
+  ];
+  static String? _resolvedBaseUrl;
+
   static String get baseUrl {
     if (customBaseUrl != null && customBaseUrl!.isNotEmpty) return customBaseUrl!;
-    return 'http://127.0.0.1:3000/api/v1/auth';
+    return _resolvedBaseUrl ?? _candidateUrls.first;
   }
 
+  static Future<http.Response> _post(String endpoint, Map<String, dynamic> body, {Map<String, String>? extraHeaders}) async {
+    final targets = customBaseUrl != null && customBaseUrl!.isNotEmpty
+        ? [customBaseUrl!]
+        : [
+            if (_resolvedBaseUrl != null) _resolvedBaseUrl!,
+            ..._candidateUrls.where((u) => u != _resolvedBaseUrl),
+          ];
+
+    Object? lastError;
+    for (final base in targets) {
+      try {
+        final res = await http.post(
+          Uri.parse('$base$endpoint'),
+          headers: {'Content-Type': 'application/json', ...?extraHeaders},
+          body: jsonEncode(body),
+        ).timeout(const Duration(seconds: 4));
+        _resolvedBaseUrl = base;
+        return res;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('Connection refused');
+  }
+
+  static Future<http.Response> _get(String endpoint, {Map<String, String>? headers}) async {
+    final targets = customBaseUrl != null && customBaseUrl!.isNotEmpty
+        ? [customBaseUrl!]
+        : [
+            if (_resolvedBaseUrl != null) _resolvedBaseUrl!,
+            ..._candidateUrls.where((u) => u != _resolvedBaseUrl),
+          ];
+
+    Object? lastError;
+    for (final base in targets) {
+      try {
+        final res = await http.get(
+          Uri.parse('$base$endpoint'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 4));
+        _resolvedBaseUrl = base;
+        return res;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('Connection refused');
+  }
 
   static String? _accessToken;
   static String? _refreshToken;
@@ -47,11 +104,7 @@ class AuthApiService {
 
   static Future<AuthApiResponse<int>> sendRegistrationOtp(String phone) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/register/send-otp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone}),
-      ).timeout(const Duration(seconds: 10));
+      final res = await _post('/register/send-otp', {'phone': phone});
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -69,20 +122,13 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      final msg = e.toString().contains('TimeoutException') || e.toString().contains('Connection refused')
-          ? 'Cannot connect to server. Ensure backend is running and USB reverse proxy is active.'
-          : 'Network error: $e';
-      return AuthApiResponse(success: false, message: msg);
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
   static Future<AuthApiResponse<String>> verifyRegistrationOtp(String phone, String otp) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/register/verify-otp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone, 'otp': otp}),
-      ).timeout(const Duration(seconds: 10));
+      final res = await _post('/register/verify-otp', {'phone': phone, 'otp': otp});
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -99,10 +145,7 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      final msg = e.toString().contains('TimeoutException') || e.toString().contains('Connection refused')
-          ? 'Cannot connect to server. Ensure backend is running.'
-          : 'Network error: $e';
-      return AuthApiResponse(success: false, message: msg);
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
@@ -115,18 +158,14 @@ class AuthApiService {
     required bool acceptTerms,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/register/complete'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'verificationToken': verificationToken,
-          'phone': phone,
-          'fullName': fullName,
-          'password': password,
-          'confirmPassword': confirmPassword,
-          'acceptTerms': acceptTerms,
-        }),
-      ).timeout(const Duration(seconds: 15));
+      final res = await _post('/register/complete', {
+        'verificationToken': verificationToken,
+        'phone': phone,
+        'fullName': fullName,
+        'password': password,
+        'confirmPassword': confirmPassword,
+        'acceptTerms': acceptTerms,
+      });
       final json = jsonDecode(res.body);
       if (res.statusCode == 201) {
         _accessToken = json['tokens']?['accessToken'];
@@ -146,7 +185,7 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
@@ -156,15 +195,11 @@ class AuthApiService {
     bool rememberMe = false,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'phone': phone,
-          'password': password,
-          'rememberMe': rememberMe,
-        }),
-      ).timeout(const Duration(seconds: 15));
+      final res = await _post('/login', {
+        'phone': phone,
+        'password': password,
+        'rememberMe': rememberMe,
+      });
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         _accessToken = json['tokens']?['accessToken'];
@@ -183,17 +218,13 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
   static Future<AuthApiResponse<int>> sendForgotPasswordOtp(String phone) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/forgot-password/send-otp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone}),
-      );
+      final res = await _post('/forgot-password/send-otp', {'phone': phone});
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -211,17 +242,13 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
   static Future<AuthApiResponse<String>> verifyForgotPasswordOtp(String phone, String otp) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/forgot-password/verify-otp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone, 'otp': otp}),
-      );
+      final res = await _post('/forgot-password/verify-otp', {'phone': phone, 'otp': otp});
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -238,7 +265,7 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
@@ -249,16 +276,12 @@ class AuthApiService {
     required String confirmNewPassword,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/forgot-password/reset'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'verificationToken': verificationToken,
-          'phone': phone,
-          'newPassword': newPassword,
-          'confirmNewPassword': confirmNewPassword,
-        }),
-      );
+      final res = await _post('/forgot-password/reset', {
+        'verificationToken': verificationToken,
+        'phone': phone,
+        'newPassword': newPassword,
+        'confirmNewPassword': confirmNewPassword,
+      });
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -276,7 +299,7 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
@@ -285,11 +308,7 @@ class AuthApiService {
       final token = _refreshToken;
       clearSession();
       if (token != null) {
-        await http.post(
-          Uri.parse('$baseUrl/logout'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'refreshToken': token}),
-        );
+        await _post('/logout', {'refreshToken': token});
       }
       return AuthApiResponse(success: true, data: true, message: 'Logged out successfully', statusCode: 200);
     } catch (e) {
@@ -303,8 +322,8 @@ class AuthApiService {
       if (_accessToken == null) {
         return AuthApiResponse(success: false, message: 'Not authenticated', statusCode: 401);
       }
-      final res = await http.get(
-        Uri.parse('$baseUrl/me'),
+      final res = await _get(
+        '/me',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $_accessToken',
@@ -326,7 +345,7 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 
@@ -335,11 +354,7 @@ class AuthApiService {
       if (_refreshToken == null) {
         return AuthApiResponse(success: false, message: 'No refresh token available', statusCode: 401);
       }
-      final res = await http.post(
-        Uri.parse('$baseUrl/refresh'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'refreshToken': _refreshToken}),
-      );
+      final res = await _post('/refresh', {'refreshToken': _refreshToken});
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         _accessToken = json['accessToken'];
@@ -350,7 +365,7 @@ class AuthApiService {
         return AuthApiResponse(success: false, message: json['error'] ?? 'Session expired', statusCode: res.statusCode);
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      return AuthApiResponse(success: false, message: 'Cannot reach server. Ensure backend is running.');
     }
   }
 }
