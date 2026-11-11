@@ -16,6 +16,7 @@ for (const envPath of envCandidates) {
 export interface AppConfig {
   env: string;
   port: number;
+  gatewayPort: number;
   host: string;
   jwt: {
     accessSecret: string;
@@ -58,6 +59,7 @@ export const config: AppConfig = {
     return process.env.NODE_ENV || 'development';
   },
   port: parseInt(process.env.PORT || '3000', 10),
+  gatewayPort: parseInt(process.env.GATEWAY_PORT || '3001', 10),
   host: process.env.HOST || '0.0.0.0',
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET || 'rootu-production-access-secret-minimum-32-chars-long!',

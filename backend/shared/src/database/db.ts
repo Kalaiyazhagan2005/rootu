@@ -43,6 +43,33 @@ export interface LoginAttemptRecord {
   lastAttemptAt: number;
 }
 
+export interface BreadcrumbRecord {
+  id?: number | string;
+  userId: string;
+  latitude: number;
+  longitude: number;
+  speedKmh: number;
+  bearingDegrees: number;
+  recordedAt: Date;
+}
+
+export interface TripRecord {
+  id: string;
+  title: string;
+  joinCode: string;
+  creatorId: string;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+export interface TripMemberRecord {
+  id: string;
+  tripId: string;
+  userId: string;
+  role: string;
+  joinedAt: Date;
+}
+
 /**
  * Enterprise Production PostgreSQL Database Store with In-Memory Test Fallback.
  * Ensures strict ACID transactions, parameterized SQL injection immunity,
@@ -59,6 +86,9 @@ export class DatabaseStore {
   private loginAttempts = new Map<string, LoginAttemptRecord>(); // key: phoneE164
   private consumedVerificationTokens = new Map<string, number>(); // key: jti, value: expiresAt ms
   private otpRequestsByPhone = new Map<string, number[]>(); // key: phoneE164, value: timestamps ms
+  private breadcrumbs: BreadcrumbRecord[] = [];
+  private tripsById = new Map<string, TripRecord>();
+  private tripMembers = new Map<string, TripMemberRecord[]>(); // key: tripId
 
   constructor() {
     if (config.database.url) {
@@ -807,6 +837,205 @@ export class DatabaseStore {
     return { allowed: true, retryAfterSeconds: 0 };
   }
 
+  // --- Breadcrumb Operations ---
+
+  public async insertBreadcrumbsBatch(records: BreadcrumbRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    if (this.pool) {
+      const values: any[] = [];
+      const rowPlaceholders: string[] = [];
+
+      records.forEach((record, idx) => {
+        const offset = idx * 6;
+        rowPlaceholders.push(
+          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`
+        );
+        values.push(
+          record.userId,
+          record.latitude,
+          record.longitude,
+          record.speedKmh,
+          record.bearingDegrees,
+          record.recordedAt
+        );
+      });
+
+      const sql = `INSERT INTO breadcrumbs (user_id, latitude, longitude, speed_kmh, bearing_degrees, recorded_at) VALUES ${rowPlaceholders.join(
+        ', '
+      )}`;
+      await this.pool.query(sql, values);
+      return;
+    }
+
+    for (const record of records) {
+      this.breadcrumbs.push({
+        ...record,
+        id: this.breadcrumbs.length + 1,
+      });
+    }
+  }
+
+  public async getRecentBreadcrumbs(userId: string, limit: number = 50): Promise<BreadcrumbRecord[]> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, user_id, latitude, longitude, speed_kmh, bearing_degrees, recorded_at
+         FROM breadcrumbs
+         WHERE user_id = $1
+         ORDER BY recorded_at DESC
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return res.rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        speedKmh: Number(row.speed_kmh),
+        bearingDegrees: Number(row.bearing_degrees),
+        recordedAt: new Date(row.recorded_at),
+      }));
+    }
+
+    return this.breadcrumbs
+      .filter((b) => b.userId === userId)
+      .slice(-limit)
+      .reverse();
+  }
+
+  // --- Trip & Convoy Operations ---
+
+  public async createTrip(data: {
+    title: string;
+    joinCode: string;
+    creatorId: string;
+  }): Promise<TripRecord> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `INSERT INTO trips (title, join_code, creator_id, is_active)
+         VALUES ($1, $2, $3, TRUE)
+         RETURNING id, title, join_code, creator_id, is_active, created_at`,
+        [data.title, data.joinCode, data.creatorId]
+      );
+      const row = res.rows[0];
+      const trip: TripRecord = {
+        id: row.id,
+        title: row.title,
+        joinCode: row.join_code,
+        creatorId: row.creator_id,
+        isActive: Boolean(row.is_active),
+        createdAt: new Date(row.created_at),
+      };
+      await this.addTripMember(trip.id, data.creatorId, 'CREATOR');
+      return trip;
+    }
+
+    const trip: TripRecord = {
+      id: crypto.randomUUID(),
+      title: data.title,
+      joinCode: data.joinCode,
+      creatorId: data.creatorId,
+      isActive: true,
+      createdAt: new Date(),
+    };
+    this.tripsById.set(trip.id, trip);
+    await this.addTripMember(trip.id, data.creatorId, 'CREATOR');
+    return { ...trip };
+  }
+
+  public async findTripById(tripId: string): Promise<TripRecord | null> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, title, join_code, creator_id, is_active, created_at
+         FROM trips WHERE id = $1`,
+        [tripId]
+      );
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        title: row.title,
+        joinCode: row.join_code,
+        creatorId: row.creator_id,
+        isActive: Boolean(row.is_active),
+        createdAt: new Date(row.created_at),
+      };
+    }
+
+    const trip = this.tripsById.get(tripId);
+    return trip ? { ...trip } : null;
+  }
+
+  public async addTripMember(tripId: string, userId: string, role: string = 'RIDER'): Promise<TripMemberRecord> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `INSERT INTO trip_members (trip_id, user_id, role)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (trip_id, user_id) DO UPDATE SET role = EXCLUDED.role
+         RETURNING id, trip_id, user_id, role, joined_at`,
+        [tripId, userId, role]
+      );
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        tripId: row.trip_id,
+        userId: row.user_id,
+        role: row.role,
+        joinedAt: new Date(row.joined_at),
+      };
+    }
+
+    const list = this.tripMembers.get(tripId) || [];
+    const existingIdx = list.findIndex((m) => m.userId === userId);
+    const member: TripMemberRecord = {
+      id: crypto.randomUUID(),
+      tripId,
+      userId,
+      role,
+      joinedAt: new Date(),
+    };
+    if (existingIdx >= 0) {
+      list[existingIdx] = member;
+    } else {
+      list.push(member);
+    }
+    this.tripMembers.set(tripId, list);
+    return { ...member };
+  }
+
+  public async isTripMember(tripId: string, userId: string): Promise<boolean> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `SELECT 1 FROM trip_members WHERE trip_id = $1 AND user_id = $2`,
+        [tripId, userId]
+      );
+      return res.rows.length > 0;
+    }
+
+    const members = this.tripMembers.get(tripId);
+    if (!members) return false;
+    return members.some((m) => m.userId === userId);
+  }
+
+  public async getTripMembers(tripId: string): Promise<TripMemberRecord[]> {
+    if (this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, trip_id, user_id, role, joined_at
+         FROM trip_members WHERE trip_id = $1`,
+        [tripId]
+      );
+      return res.rows.map((row) => ({
+        id: row.id,
+        tripId: row.trip_id,
+        userId: row.user_id,
+        role: row.role,
+        joinedAt: new Date(row.joined_at),
+      }));
+    }
+
+    return (this.tripMembers.get(tripId) || []).map((m) => ({ ...m }));
+  }
+
   public async clearAll(): Promise<void> {
     if (this.pool) {
       try {
@@ -817,7 +1046,10 @@ export class DatabaseStore {
             otps,
             login_attempts,
             consumed_verification_tokens,
-            otp_requests
+            otp_requests,
+            trip_members,
+            trips,
+            breadcrumbs
           CASCADE;
         `);
       } catch (err) {
@@ -832,6 +1064,9 @@ export class DatabaseStore {
     this.loginAttempts.clear();
     this.consumedVerificationTokens.clear();
     this.otpRequestsByPhone.clear();
+    this.breadcrumbs = [];
+    this.tripsById.clear();
+    this.tripMembers.clear();
   }
 
   public async close(): Promise<void> {

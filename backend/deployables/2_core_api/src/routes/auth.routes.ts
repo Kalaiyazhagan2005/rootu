@@ -268,8 +268,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       }
 
       // Session Invalidation on Password Reset:
-      // If access token was issued prior to password reset, reject it immediately
-      if (user.passwordChangedAt) {
+      // If access token was issued prior to a password reset (password changed after account creation), reject it immediately
+      if (user.passwordChangedAt && user.createdAt && user.passwordChangedAt.getTime() > user.createdAt.getTime()) {
         const tokenIssuedAtMs = payload.issuedAtMs || (payload.iat ? payload.iat * 1000 : 0);
         if (tokenIssuedAtMs < user.passwordChangedAt.getTime()) {
           return reply.status(401).send({ error: 'Session invalidated due to password reset. Please log in again.' });
