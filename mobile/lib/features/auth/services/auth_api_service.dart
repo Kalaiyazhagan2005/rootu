@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../../../core/constants/app_config.dart';
 
 class AuthApiResponse<T> {
   final bool success;
@@ -20,69 +21,25 @@ class AuthApiResponse<T> {
 class AuthApiService {
   static String? customBaseUrl;
 
-  // Candidate connection endpoints:
-  // 1. 127.0.0.1:3000 via USB reverse proxy (adb reverse tcp:3000 tcp:3000)
-  // 2. 10.76.177.158:3000 via local Wi-Fi LAN
-  // 3. 10.0.2.2:3000 via Android Studio Emulator loopback
-  static const List<String> _candidateUrls = [
-    'http://127.0.0.1:3000/api/v1/auth',
-    'http://10.76.177.158:3000/api/v1/auth',
-    'http://10.0.2.2:3000/api/v1/auth',
-  ];
-  static String? _resolvedBaseUrl;
+  /// Production-ready single source of truth for the Auth API URL.
+  /// Defined in AppConfig; can be set at build-time with `--dart-define=API_BASE_URL=...`
+  static String get baseUrl => customBaseUrl ?? AppConfig.authBaseUrl;
 
-  static String get baseUrl {
-    if (customBaseUrl != null && customBaseUrl!.isNotEmpty) return customBaseUrl!;
-    return _resolvedBaseUrl ?? _candidateUrls.first;
+  static const Duration requestTimeout = Duration(seconds: 10);
+
+  static Future<http.Response> _post(String endpoint, Map<String, dynamic> body, {Map<String, String>? extraHeaders}) {
+    return http.post(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: {'Content-Type': 'application/json', ...?extraHeaders},
+      body: jsonEncode(body),
+    ).timeout(requestTimeout);
   }
 
-  static Future<http.Response> _post(String endpoint, Map<String, dynamic> body, {Map<String, String>? extraHeaders}) async {
-    final targets = customBaseUrl != null && customBaseUrl!.isNotEmpty
-        ? [customBaseUrl!]
-        : [
-            if (_resolvedBaseUrl != null) _resolvedBaseUrl!,
-            ..._candidateUrls.where((u) => u != _resolvedBaseUrl),
-          ];
-
-    Object? lastError;
-    for (final base in targets) {
-      try {
-        final res = await http.post(
-          Uri.parse('$base$endpoint'),
-          headers: {'Content-Type': 'application/json', ...?extraHeaders},
-          body: jsonEncode(body),
-        ).timeout(const Duration(seconds: 4));
-        _resolvedBaseUrl = base;
-        return res;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw lastError ?? Exception('Connection refused');
-  }
-
-  static Future<http.Response> _get(String endpoint, {Map<String, String>? headers}) async {
-    final targets = customBaseUrl != null && customBaseUrl!.isNotEmpty
-        ? [customBaseUrl!]
-        : [
-            if (_resolvedBaseUrl != null) _resolvedBaseUrl!,
-            ..._candidateUrls.where((u) => u != _resolvedBaseUrl),
-          ];
-
-    Object? lastError;
-    for (final base in targets) {
-      try {
-        final res = await http.get(
-          Uri.parse('$base$endpoint'),
-          headers: headers,
-        ).timeout(const Duration(seconds: 4));
-        _resolvedBaseUrl = base;
-        return res;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw lastError ?? Exception('Connection refused');
+  static Future<http.Response> _get(String endpoint, {Map<String, String>? headers}) {
+    return http.get(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: headers,
+    ).timeout(requestTimeout);
   }
 
   static String? _accessToken;
