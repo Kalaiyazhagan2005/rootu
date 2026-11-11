@@ -1,6 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class AuthApiResponse<T> {
@@ -22,11 +20,10 @@ class AuthApiResponse<T> {
 class AuthApiService {
   static String? customBaseUrl;
 
-  // 10.0.2.2 for Android emulator, 127.0.0.1 for desktop/web/iOS simulator
+  // 127.0.0.1:3000 connects directly over USB via 'adb reverse tcp:3000 tcp:3000' on Android devices,
+  // as well as working for desktop, web, and iOS simulator.
   static String get baseUrl {
     if (customBaseUrl != null && customBaseUrl!.isNotEmpty) return customBaseUrl!;
-    if (kIsWeb) return 'http://127.0.0.1:3000/api/v1/auth';
-    if (Platform.isAndroid) return 'http://10.0.2.2:3000/api/v1/auth';
     return 'http://127.0.0.1:3000/api/v1/auth';
   }
 
@@ -54,7 +51,7 @@ class AuthApiService {
         Uri.parse('$baseUrl/register/send-otp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': phone}),
-      );
+      ).timeout(const Duration(seconds: 10));
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -72,7 +69,10 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      final msg = e.toString().contains('TimeoutException') || e.toString().contains('Connection refused')
+          ? 'Cannot connect to server. Ensure backend is running and USB reverse proxy is active.'
+          : 'Network error: $e';
+      return AuthApiResponse(success: false, message: msg);
     }
   }
 
@@ -82,7 +82,7 @@ class AuthApiService {
         Uri.parse('$baseUrl/register/verify-otp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': phone, 'otp': otp}),
-      );
+      ).timeout(const Duration(seconds: 10));
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         return AuthApiResponse(
@@ -99,7 +99,10 @@ class AuthApiService {
         );
       }
     } catch (e) {
-      return AuthApiResponse(success: false, message: 'Network error: $e');
+      final msg = e.toString().contains('TimeoutException') || e.toString().contains('Connection refused')
+          ? 'Cannot connect to server. Ensure backend is running.'
+          : 'Network error: $e';
+      return AuthApiResponse(success: false, message: msg);
     }
   }
 
@@ -123,7 +126,7 @@ class AuthApiService {
           'confirmPassword': confirmPassword,
           'acceptTerms': acceptTerms,
         }),
-      );
+      ).timeout(const Duration(seconds: 15));
       final json = jsonDecode(res.body);
       if (res.statusCode == 201) {
         _accessToken = json['tokens']?['accessToken'];
@@ -161,7 +164,7 @@ class AuthApiService {
           'password': password,
           'rememberMe': rememberMe,
         }),
-      );
+      ).timeout(const Duration(seconds: 15));
       final json = jsonDecode(res.body);
       if (res.statusCode == 200) {
         _accessToken = json['tokens']?['accessToken'];
