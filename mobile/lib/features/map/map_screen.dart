@@ -556,7 +556,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.rootu_mobile',
+                fallbackUrl: 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                userAgentPackageName: 'app.rootu.mobility',
                 tileBuilder: _selectedStyle == MapStyleMode.riderDark
                     ? darkModeTileBuilder
                     : null,
